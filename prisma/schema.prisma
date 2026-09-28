@@ -1,0 +1,78 @@
+generator client {
+  provider     = "prisma-client-js"
+  output       = "../src/generated/prisma"
+  moduleFormat = "esm"
+}
+
+datasource db {
+  provider = "postgresql"
+  
+}
+
+model User {
+  id         Int         @id @default(autoincrement())
+  name       String      @db.VarChar(100)
+  email      String      @unique @db.VarChar(150)
+  createdAt  DateTime?   @default(now()) @map("created_at") @db.Timestamp(6)
+  
+  borrowings Borrowing[]
+  queues     Queue[]
+
+  @@map("users")
+}
+
+model Book {
+  id              Int         @id @default(autoincrement())
+  title           String      @db.VarChar(200)
+  author          String      @db.VarChar(150)
+  totalCopies     Int         @default(1) @map("total_copies")
+  availableCopies Int         @default(1) @map("available_copies")
+  createdAt       DateTime?   @default(now()) @map("created_at") @db.Timestamp(6)
+
+  borrowings      Borrowing[]
+  queues          Queue[]
+
+  @@map("books")
+}
+
+model Borrowing {
+  id         Int       @id @default(autoincrement())
+  userId     Int       @map("user_id")
+  bookId     Int       @map("book_id")
+  borrowedAt DateTime? @default(now()) @map("borrowed_at") @db.Timestamp(6)
+  dueDate    DateTime  @map("due_date") @db.Timestamp(6)
+  returnedAt DateTime? @map("returned_at") @db.Timestamp(6)
+
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  book       Book      @relation(fields: [bookId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@map("borrowings")
+}
+
+model Queue {
+  id         Int         @id @default(autoincrement())
+  userId     Int         @map("user_id")
+  bookId     Int         @map("book_id")
+  status     QueueStatus @default(WAITING)
+  position   Int
+  reservedAt DateTime?   @map("reserved_at") @db.Timestamp(6)
+  expiresAt  DateTime?   @map("expires_at") @db.Timestamp(6)
+  receivedAt DateTime?   @map("received_at") @db.Timestamp(6)
+  createdAt  DateTime?   @default(now()) @map("created_at") @db.Timestamp(6)
+
+  user       User        @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  book       Book        @relation(fields: [bookId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([bookId, status], map: "idx_queues_book_status")
+  @@map("queues")
+}
+
+enum QueueStatus {
+  WAITING
+  RESERVED
+  FULFILLED
+  EXPIRED
+  CANCELLED
+
+  @@map("queue_status")
+}

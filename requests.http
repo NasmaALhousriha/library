@@ -1,0 +1,115 @@
+### requests.http
+### Needs the "REST Client" extension in VS Code (click "Send Request" above each request)
+### Before starting, empty the DB:
+###   psql -U postgres -d library_db -c "TRUNCATE queues, borrowings, books, users RESTART IDENTITY CASCADE;"
+### Run the requests in order. Expected result is written above each one.
+
+@base = http://localhost:3000
+
+### 1) 201 - user 1 (A)
+POST {{base}}/users
+Content-Type: application/json
+
+{ "name": "A", "email": "a@x.com" }
+
+### 2) 201 - user 2 (B)
+POST {{base}}/users
+Content-Type: application/json
+
+{ "name": "B", "email": "b@x.com" }
+
+### 3) 201 - user 3 (C)
+POST {{base}}/users
+Content-Type: application/json
+
+{ "name": "C", "email": "c@x.com" }
+
+### 4) 409 "Email already in use"
+POST {{base}}/users
+Content-Type: application/json
+
+{ "name": "A2", "email": "a@x.com" }
+
+### 5) 201 - book 1 with ONE copy
+POST {{base}}/books
+Content-Type: application/json
+
+{ "title": "Book1", "author": "Auth", "totalCopies": 1 }
+
+### 6) 404 "Book not found"
+GET {{base}}/books/999
+
+### 7) 201 - A borrows directly -> { type: "borrowing", borrowingId: 1 }
+POST {{base}}/borrowings
+Content-Type: application/json
+
+{ "userId": 1, "bookId": 1 }
+
+### 8) 201 - B has no copy -> goes to queue -> { type: "queue", queueId: 1 }
+POST {{base}}/borrowings
+Content-Type: application/json
+
+{ "userId": 2, "bookId": 1 }
+
+### 9) 201 - C joins queue -> { queueId: 2 }
+POST {{base}}/queue
+Content-Type: application/json
+
+{ "userId": 3, "bookId": 1 }
+
+### 10) 409 P0013 "already in the queue"
+POST {{base}}/queue
+Content-Type: application/json
+
+{ "userId": 3, "bookId": 1 }
+
+### 11) 409 P0015 "already borrowed"
+POST {{base}}/borrowings
+Content-Type: application/json
+
+{ "userId": 1, "bookId": 1 }
+
+### 12) 201 - A returns -> copy reserved for B (first in queue)
+POST {{base}}/borrowings/1/return
+
+### 13) 200 - B = RESERVED, C = WAITING (position 1), totalInQueue = 2
+GET {{base}}/queue/book/1
+
+### 14) 404 P0016 - C tries to take B's reservation
+POST {{base}}/queue/receive
+Content-Type: application/json
+
+{ "queueId": 1, "userId": 3 }
+
+### 15) 201 - B receives -> { borrowingId: 2 }
+POST {{base}}/queue/receive
+Content-Type: application/json
+
+{ "queueId": 1, "userId": 2 }
+
+### 16) 404 P0014 - return the same borrowing twice
+POST {{base}}/borrowings/1/return
+
+### 17) 201 - C cancels
+POST {{base}}/queue/2/cancel
+Content-Type: application/json
+
+{ "userId": 3 }
+
+### 18) 409 P0018 - cancel again
+POST {{base}}/queue/2/cancel
+Content-Type: application/json
+
+{ "userId": 3 }
+
+### 19) 200 - totalInQueue = 0 (history still listed)
+GET {{base}}/queue/book/1
+
+### 20) 400 "Related record does not exist" - user 99 does not exist (FK 23503)
+POST {{base}}/borrowings
+Content-Type: application/json
+
+{ "userId": 99, "bookId": 1 }
+
+### 21) 400 - ParseIntPipe rejects "abc"
+POST {{base}}/borrowings/abc/return
