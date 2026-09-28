@@ -1,6 +1,15 @@
 SET client_encoding = 'UTF8';
-
 DROP FUNCTION IF EXISTS receive_book(INT);
+
+CREATE OR REPLACE FUNCTION assert_read_committed()
+RETURNS VOID AS $$
+BEGIN
+    IF current_setting('transaction_isolation') <> 'read committed' THEN
+        RAISE EXCEPTION 'Library functions require READ COMMITTED (current: %)',
+            current_setting('transaction_isolation') USING ERRCODE = 'P0019';
+    END IF;
+END;
+$$ LANGUAGE plpgsql;
 
 CREATE OR REPLACE FUNCTION release_copy(p_book_id INT)
 RETURNS VOID AS $$
@@ -50,12 +59,14 @@ END;
 $$ LANGUAGE plpgsql;
 
 
--- process_all_expired_reservations:
+-- process_all_expired_reservations: بيستدعيها الـ scheduler كل دقيقة
 CREATE OR REPLACE FUNCTION process_all_expired_reservations()
 RETURNS VOID AS $$
 DECLARE
     v_book_id INT;
 BEGIN
+    PERFORM assert_read_committed();
+
     FOR v_book_id IN
         SELECT DISTINCT book_id
         FROM queues
@@ -119,6 +130,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+
 -- fulfill_reservation: تحويل الحجز لاستعارة
 CREATE OR REPLACE FUNCTION fulfill_reservation(p_queue_id INT)
 RETURNS INT AS $$
@@ -140,7 +152,8 @@ END;
 $$ LANGUAGE plpgsql;
 
 
--- borrow_book: عندك حجز؟ استلمو  في نسخة؟ استعير  غير هيك ادخل الطابور
+
+-- borrow_book: عندك حجز؟ استلمو ← في نسخة؟ استعير ← غير هيك ادخل الطابور
 CREATE OR REPLACE FUNCTION borrow_book(p_user_id INT, p_book_id INT)
 RETURNS JSON AS $$
 DECLARE
@@ -148,6 +161,8 @@ DECLARE
     v_reservation_id INT;
     v_borrow_id INT;
 BEGIN
+    PERFORM assert_read_committed();
+
     v_available := check_can_request(p_user_id, p_book_id);
 
     -- 1) عندك حجز صالح؟ استلمو
@@ -185,6 +200,8 @@ $$ LANGUAGE plpgsql;
 CREATE OR REPLACE FUNCTION join_queue(p_user_id INT, p_book_id INT)
 RETURNS INT AS $$
 BEGIN
+    PERFORM assert_read_committed();
+
     IF check_can_request(p_user_id, p_book_id) > 0 THEN
         RAISE EXCEPTION 'Copies available, borrow directly' USING ERRCODE = 'P0012';
     END IF;
@@ -201,6 +218,8 @@ DECLARE
     v_queue_id INT;
     v_book_id  INT;
 BEGIN
+    PERFORM assert_read_committed();
+
     -- 1) نجيب الكتاب بدون قفل
     SELECT book_id INTO v_book_id
     FROM queues
@@ -210,7 +229,7 @@ BEGIN
         RAISE EXCEPTION 'Reservation not found or expired' USING ERRCODE = 'P0016';
     END IF;
 
-    -- 2) قفل الكتاب 
+    -- 2) قفل الكتاب أولاً
     PERFORM 1 FROM books WHERE id = v_book_id FOR NO KEY UPDATE;
 
     -- 3) قفل الحجز والتحقق من حالتو
@@ -234,6 +253,8 @@ RETURNS VOID AS $$
 DECLARE
     v_book_id INT;
 BEGIN
+    PERFORM assert_read_committed();
+
     UPDATE borrowings
     SET returned_at = NOW()
     WHERE id = p_borrowing_id AND returned_at IS NULL
@@ -257,6 +278,8 @@ DECLARE
     v_status queue_status;
     v_book_id INT;
 BEGIN
+    PERFORM assert_read_committed();
+
     -- 1) نجيب book_id بدون قفل
     SELECT book_id INTO v_book_id
     FROM queues
@@ -266,10 +289,10 @@ BEGIN
         RAISE EXCEPTION 'Queue entry not found' USING ERRCODE = 'P0017';
     END IF;
 
-    -- 2)قفل الكتاب 
+    -- 2) قفل الكتاب
     PERFORM 1 FROM books WHERE id = v_book_id FOR NO KEY UPDATE;
 
-    -- 3) قفل صف الطابور وقراءة حالتو)
+    -- 3) قفل صف الطابور وقراءة حالتو (ممكن تكون تغيرت)
     SELECT status INTO v_status
     FROM queues
     WHERE id = p_queue_id
@@ -287,6 +310,8 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+
+-- get_queue_for_book: حالة الطابور (مع معالجة المنتهيين قبل العرض)
 CREATE OR REPLACE FUNCTION get_queue_for_book(p_book_id INT)
 RETURNS JSON AS $$
 DECLARE
@@ -294,6 +319,8 @@ DECLARE
     v_queues JSON;
     v_active INT;
 BEGIN
+    PERFORM assert_read_committed();
+
     PERFORM process_expired_reservations(p_book_id);
 
     SELECT json_build_object(
@@ -325,7 +352,8 @@ BEGIN
         WHERE book_id = p_book_id AND status = 'WAITING'
     ) wp ON wp.id = q.id
     WHERE q.book_id = p_book_id;
--- بس منعد النشطين
+
+    -- #18: نعدّ النشطين بس، مو التاريخ كلو
     SELECT COUNT(*) INTO v_active
     FROM queues
     WHERE book_id = p_book_id AND status IN ('WAITING', 'RESERVED');

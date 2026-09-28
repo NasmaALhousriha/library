@@ -1,7 +1,5 @@
 -- verify.sql
 -- Run:  psql -U postgres -d library_db -f sql/verify.sql
--- Every check prints "NOTICE: PASS ...". The first failure stops the file with "FAIL ...".
--- WARNING: deletes all data in the tables.
 
 \set ON_ERROR_STOP on
 \pset tuples_only on
@@ -46,7 +44,6 @@ EXCEPTION WHEN OTHERS THEN
     ELSE RAISE;
     END IF;
 END $$ LANGUAGE plpgsql;
-
 
 -- #1 receive_book checks the user
 SELECT t_scenario();
@@ -111,6 +108,18 @@ SELECT t_check((get_queue_for_book(1)->>'totalInQueue')::INT = 2, '#18a two wait
 SELECT cancel_queue_entry(1, 2);
 SELECT cancel_queue_entry(2, 3);
 SELECT t_check((get_queue_for_book(1)->>'totalInQueue')::INT = 0, '#18b both cancelled -> 0');
+
+-- #19 functions refuse to run outside READ COMMITTED
+SELECT t_reset(1);
+SET default_transaction_isolation = 'repeatable read';
+SELECT t_expect_error('SELECT join_queue(1, 1)', 'P0019', '#19 REPEATABLE READ rejected');
+SET default_transaction_isolation = 'read committed';
+
+-- #20 two WAITING entries cannot share the same position
+SELECT t_reset(2);
+INSERT INTO queues (user_id, book_id, status, position) VALUES (1, 1, 'WAITING', 1);
+SELECT t_expect_error($$INSERT INTO queues (user_id, book_id, status, position) VALUES (2, 1, 'WAITING', 1)$$,
+                      '23505', '#20 duplicate waiting position rejected');
 
 TRUNCATE queues, borrowings, books, users RESTART IDENTITY CASCADE;
 DROP FUNCTION t_scenario(), t_reset(INT), t_check(BOOLEAN, TEXT), t_expect_error(TEXT, TEXT, TEXT);

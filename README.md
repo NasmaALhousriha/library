@@ -101,7 +101,7 @@ npm run start:dev
 | `23505` | Duplicate entry | 409 |
 | `23503` | Related record does not exist | 400 |
 
-أي خطأ غير متوقع بيرجع `500 Internal server error`، والتفاصيل بتنكتب بالـ log بس.
+أي خطأ غير متوقع بيرجع `500 Internal server error`، والتفاصيل بتنكتب بالـ log بس. ومنها `P0019` (الـ functions انشغّلت خارج READ COMMITTED)، لأنو هاد غلط إعداد بالسيرفر مو غلط من المستخدم.
 
 ---
 
@@ -129,6 +129,8 @@ PERFORM 1 FROM books WHERE id = p_book_id FOR NO KEY UPDATE;
 - **ترتيب قفل ثابت** (`books` ← `queues`) بكل الـ functions، فما في deadlocks.
 - **`FOR NO KEY UPDATE` مو `FOR UPDATE`:** أي `INSERT` على `borrowings` أو `queues` بياخد قفل `KEY SHARE` على الكتاب (بسبب الـ foreign key). و`FOR UPDATE` بيتعارض معو فبيسبب deadlock، أما `FOR NO KEY UPDATE` فلا.
 - **FIFO بـ `position`** مو `created_at`، لأنو `NOW()` بـ PostgreSQL هو وقت **بداية** الـ transaction مو وقت الإدخال.
+- **لازم `READ COMMITTED`** (الافتراضي): كل استعلام بياخد snapshot جديد، فبعد انتظار قفل الكتاب منشوف كل شي انعمل commit. تحت `REPEATABLE READ` الـ snapshot بيضل قديم، فبيطلع `position` مكرر وممكن نسخة تنحط عالرف وفي حدا عم يستنى. لهيك كل function بيستدعيها Nest بتبلّش بـ `assert_read_committed()` وبترفض بـ `P0019` تحت أي مستوى تاني.
+  ⚠️ لا تلفّ الاستدعاءات بـ `prisma.$transaction({ isolationLevel: 'RepeatableRead' })` أو `Serializable`.
 
 ### الحماية على مستوى الـ Schema (Defense in depth)
 
@@ -137,6 +139,7 @@ PERFORM 1 FROM books WHERE id = p_book_id FOR NO KEY UPDATE;
 | `CHECK (available_copies <= total_copies)` | نسخ أكتر من الموجود |
 | `UNIQUE (user_id, book_id) WHERE status IN ('WAITING','RESERVED')` | نفس المستخدم مرتين بالطابور |
 | `UNIQUE (user_id, book_id) WHERE returned_at IS NULL` | استعارتين نشطتين لنفس الكتاب |
+| `UNIQUE (book_id, position) WHERE status = 'WAITING'` | شخصين عم يستنوا بنفس الـ position |
 
 ---
 
